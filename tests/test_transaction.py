@@ -209,7 +209,7 @@ def test_bad_parameters(db):
         with pytest.raises(ValueError):
             foo = dns.name.from_text('foo', None)
             rdata = dns.rdata.from_text('in', 'a', '10.0.0.3')
-            txn.add(foo, 0x80000000, rdata)
+            txn.add(foo, 0x100000000, rdata)
         with pytest.raises(TypeError):
             txn.add(foo)
         with pytest.raises(TypeError):
@@ -496,6 +496,35 @@ def test_zone_iteration(zone):
         for (name, rdataset) in txn:
             actual[(name, rdataset.rdtype, rdataset.covers)] = rdataset
     assert actual == expected
+
+def test_iteration_in_replacement_txn(zone):
+    rds = dns.rdataset.from_text('in', 'a', 300, '1.2.3.4', '5.6.7.8')
+    expected = {}
+    expected[(dns.name.empty, rds.rdtype, rds.covers)] = rds
+    with zone.writer(True) as txn:
+        txn.replace(dns.name.empty, rds)
+        actual = {}
+        for (name, rdataset) in txn:
+            actual[(name, rdataset.rdtype, rdataset.covers)] = rdataset
+    assert actual == expected
+
+def test_replacement_commit(zone):
+    rds = dns.rdataset.from_text('in', 'a', 300, '1.2.3.4', '5.6.7.8')
+    expected = {}
+    expected[(dns.name.empty, rds.rdtype, rds.covers)] = rds
+    with zone.writer(True) as txn:
+        txn.replace(dns.name.empty, rds)
+    with zone.reader() as txn:
+        actual = {}
+        for (name, rdataset) in txn:
+            actual[(name, rdataset.rdtype, rdataset.covers)] = rdataset
+    assert actual == expected
+
+def test_replacement_get(zone):
+    with zone.writer(True) as txn:
+        rds = txn.get(dns.name.empty, 'soa')
+        assert rds is None
+
 
 @pytest.fixture
 def vzone():

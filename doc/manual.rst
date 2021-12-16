@@ -11,9 +11,11 @@ Dnspython Manual
    query
    resolver
    zone
+   zonefile
    dnssec
    async
    exceptions
    utilities
    typing
    threads
+   examples
