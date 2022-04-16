@@ -1,6 +1,8 @@
 import sys
 
-if sys.platform == 'win32':
+if sys.platform == "win32":
+
+    from typing import Any
 
     import dns.name
 
@@ -9,22 +11,20 @@ if sys.platform == 'win32':
     import winreg
 
     try:
-        try:
-            import threading as _threading
-        except ImportError:  # pragma: no cover
-            import dummy_threading as _threading    # type: ignore
+        import threading
         import pythoncom
         import wmi
+
         _have_wmi = True
-    except Exception as e:
+    except Exception:
         _have_wmi = False
 
     def _config_domain(domain):
         # Sometimes DHCP servers add a '.' prefix to the default domain, and
         # Windows just stores such values in the registry (see #687).
         # Check for this and fix it.
-        if domain.startswith('.'):
-             domain = domain[1:]
+        if domain.startswith("."):
+            domain = domain[1:]
         return dns.name.from_text(domain)
 
     class DnsInfo:
@@ -34,7 +34,8 @@ if sys.platform == 'win32':
             self.search = []
 
     if _have_wmi:
-        class _WMIGetter(_threading.Thread):
+
+        class _WMIGetter(threading.Thread):
             def __init__(self):
                 super().__init__()
                 self.info = DnsInfo()
@@ -47,8 +48,10 @@ if sys.platform == 'win32':
                         if interface.IPEnabled:
                             self.info.domain = _config_domain(interface.DNSDomain)
                             self.info.nameservers = list(interface.DNSServerSearchOrder)
-                            self.info.search = [dns.name.from_text(x) for x in
-                                                interface.DNSDomainSuffixSearchOrder]
+                            self.info.search = [
+                                dns.name.from_text(x)
+                                for x in interface.DNSDomainSuffixSearchOrder
+                            ]
                             break
                 finally:
                     pythoncom.CoUninitialize()
@@ -59,17 +62,11 @@ if sys.platform == 'win32':
                 self.start()
                 self.join()
                 return self.info
-                
 
-        def get_dns_info_from_wmi():
-            getter = _WMIGetter()
-            return getter.get()
     else:
-        class _WMIGetter:
-            pass
-        def get(self):
-            return None
 
+        class _WMIGetter:  # type: ignore
+            pass
 
     class _RegistryGetter:
         def __init__(self):
@@ -81,13 +78,13 @@ if sys.platform == 'win32':
             # delimiter in between ' ' and ',' (and vice-versa) in various
             # versions of windows.
             #
-            if entry.find(' ') >= 0:
-                split_char = ' '
-            elif entry.find(',') >= 0:
-                split_char = ','
+            if entry.find(" ") >= 0:
+                split_char = " "
+            elif entry.find(",") >= 0:
+                split_char = ","
             else:
                 # probably a singleton; treat as a space-separated list.
-                split_char = ' '
+                split_char = " "
             return split_char
 
         def _config_nameservers(self, nameservers):
@@ -104,41 +101,41 @@ if sys.platform == 'win32':
                 s = dns.name.from_text(s)
                 if s not in self.info.search:
                     self.info.search.append(s)
-                
+
         def _config_fromkey(self, key, always_try_domain):
             try:
-                servers, _ = winreg.QueryValueEx(key, 'NameServer')
+                servers, _ = winreg.QueryValueEx(key, "NameServer")
             except WindowsError:
                 servers = None
             if servers:
                 self._config_nameservers(servers)
             if servers or always_try_domain:
                 try:
-                    dom, _ = winreg.QueryValueEx(key, 'Domain')
+                    dom, _ = winreg.QueryValueEx(key, "Domain")
                     if dom:
                         self.info.domain = _config_domain(dom)
                 except WindowsError:
                     pass
             else:
                 try:
-                    servers, _ = winreg.QueryValueEx(key, 'DhcpNameServer')
+                    servers, _ = winreg.QueryValueEx(key, "DhcpNameServer")
                 except WindowsError:
                     servers = None
                 if servers:
                     self._config_nameservers(servers)
                     try:
-                        dom, _ = winreg.QueryValueEx(key, 'DhcpDomain')
+                        dom, _ = winreg.QueryValueEx(key, "DhcpDomain")
                         if dom:
                             self.info.domain = _config_domain(dom)
                     except WindowsError:
                         pass
             try:
-                search, _ = winreg.QueryValueEx(key, 'SearchList')
+                search, _ = winreg.QueryValueEx(key, "SearchList")
             except WindowsError:
                 search = None
             if search is None:
                 try:
-                    search, _ = winreg.QueryValueEx(key, 'DhcpSearchList')
+                    search, _ = winreg.QueryValueEx(key, "DhcpSearchList")
                 except WindowsError:
                     search = None
             if search:
@@ -155,25 +152,27 @@ if sys.platform == 'win32':
                 # from Windows 2000 through Vista.
                 connection_key = winreg.OpenKey(
                     lm,
-                    r'SYSTEM\CurrentControlSet\Control\Network'
-                    r'\{4D36E972-E325-11CE-BFC1-08002BE10318}'
-                    r'\%s\Connection' % guid)
+                    r"SYSTEM\CurrentControlSet\Control\Network"
+                    r"\{4D36E972-E325-11CE-BFC1-08002BE10318}"
+                    r"\%s\Connection" % guid,
+                )
 
                 try:
                     # The PnpInstanceID points to a key inside Enum
                     (pnp_id, ttype) = winreg.QueryValueEx(
-                        connection_key, 'PnpInstanceID')
+                        connection_key, "PnpInstanceID"
+                    )
 
                     if ttype != winreg.REG_SZ:
                         raise ValueError  # pragma: no cover
 
                     device_key = winreg.OpenKey(
-                        lm, r'SYSTEM\CurrentControlSet\Enum\%s' % pnp_id)
+                        lm, r"SYSTEM\CurrentControlSet\Enum\%s" % pnp_id
+                    )
 
                     try:
                         # Get ConfigFlags for this device
-                        (flags, ttype) = winreg.QueryValueEx(
-                            device_key, 'ConfigFlags')
+                        (flags, ttype) = winreg.QueryValueEx(device_key, "ConfigFlags")
 
                         if ttype != winreg.REG_DWORD:
                             raise ValueError  # pragma: no cover
@@ -199,17 +198,19 @@ if sys.platform == 'win32':
 
             lm = winreg.ConnectRegistry(None, winreg.HKEY_LOCAL_MACHINE)
             try:
-                tcp_params = winreg.OpenKey(lm,
-                                            r'SYSTEM\CurrentControlSet'
-                                            r'\Services\Tcpip\Parameters')
+                tcp_params = winreg.OpenKey(
+                    lm, r"SYSTEM\CurrentControlSet" r"\Services\Tcpip\Parameters"
+                )
                 try:
                     self._config_fromkey(tcp_params, True)
                 finally:
                     tcp_params.Close()
-                interfaces = winreg.OpenKey(lm,
-                                            r'SYSTEM\CurrentControlSet'
-                                            r'\Services\Tcpip\Parameters'
-                                            r'\Interfaces')
+                interfaces = winreg.OpenKey(
+                    lm,
+                    r"SYSTEM\CurrentControlSet"
+                    r"\Services\Tcpip\Parameters"
+                    r"\Interfaces",
+                )
                 try:
                     i = 0
                     while True:
@@ -231,11 +232,7 @@ if sys.platform == 'win32':
                 lm.Close()
             return self.info
 
-    def get_dns_info_from_registry():
-        """Extract resolver configuration from the Windows registry."""
-        getter = _RegistryGetter()
-        return getter.get()
-
+    _getter_class: Any
     if _have_wmi and _prefer_wmi:
         _getter_class = _WMIGetter
     else:
@@ -245,4 +242,3 @@ if sys.platform == 'win32':
         """Extract resolver configuration."""
         getter = _getter_class()
         return getter.get()
-

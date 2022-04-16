@@ -4,6 +4,9 @@
 [![Documentation Status](https://readthedocs.org/projects/dnspython/badge/?version=latest)](https://dnspython.readthedocs.io/en/latest/?badge=latest)
 [![PyPI version](https://badge.fury.io/py/dnspython.svg)](https://badge.fury.io/py/dnspython)
 [![License: ISC](https://img.shields.io/badge/License-ISC-brightgreen.svg)](https://opensource.org/licenses/ISC)
+[![Coverage](https://codecov.io/github/rthalley/dnspython/coverage.svg?branch=master)](https://codecov.io/github/rthalley/dnspython)
+[![LGTM Grade](https://img.shields.io/lgtm/grade/python/github/rthalley/dnspython)](https://lgtm.com/projects/g/rthalley/dnspython/)
+[![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 
 ## INTRODUCTION
 
@@ -28,9 +31,9 @@ to facilitate the testing of DNS software.
 
 ## ABOUT THIS RELEASE
 
-This is the development version of dnspython 2.2.0.
+This is the development version of dnspython 2.3.0.
 Please read
-[What's New](https://dnspython.readthedocs.io/en/stable/whatsnew.html) for
+[What's New](https://dnspython.readthedocs.io/en/latest/whatsnew.html) for
 information about the changes in this release.
 
 ## INSTALLATION
@@ -72,11 +75,10 @@ Note that you can install any combination of the above, e.g.:
 
 ### Notices
 
-Python 2.x support ended with the release of 1.16.0.  dnspython 2.0.0 and
-later only support Python 3.6 and later.
+Python 2.x support ended with the release of 1.16.0.  Dnspython 2.0.0 through
+2.2.x support Python 3.6 and later.  As of dnspython 2.3.0, the minimum
+supported Python version will be 3.7.  We plan to align future support with the
+lifetime of the Python 3 versions.
 
 Documentation has moved to
 [dnspython.readthedocs.io](https://dnspython.readthedocs.io).
-
-The ChangeLog has been discontinued.  Please see the git history for detailed
-change information.

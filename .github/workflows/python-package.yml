@@ -5,9 +5,13 @@ name: Python build
 
 on:
   push:
-    branches: [ master ]
+    branches:
+      - master
+    paths:
+      - '**.py'
   pull_request:
-    branches: [ master ]
+    branches:
+      - master
 
 jobs:
   build:
@@ -18,7 +22,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-        python-version: ["3.6","3.7","3.8","3.9","3.10"]
+        python-version: ["3.7","3.8","3.9","3.10"]
         exclude:
           - os: windows-latest
             python-version: "3.9"
@@ -26,8 +30,6 @@ jobs:
             python-version: "3.8"
           - os: windows-latest
             python-version: "3.7"
-          - os: windows-latest
-            python-version: "3.6"
 
     steps:
     - uses: actions/checkout@v2
@@ -40,6 +42,15 @@ jobs:
         python -m pip install --upgrade pip
         python -m pip install poetry
         poetry install -E dnssec -E doh -E idna -E trio -E curio
+    - name: Typecheck
+      run: |
+        poetry run python -m mypy --install-types --non-interactive --disallow-incomplete-defs dns
     - name: Test with pytest
       run: |
-        poetry run pytest --cov=. --cov-report=xml:coverage.xml
+        poetry run pytest --cov=dns --cov-branch --cov-report=xml:coverage.xml
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v2
+      with:
+        files: ./coverage.xml
+        flags: unittests
+        name: codecov-umbrella

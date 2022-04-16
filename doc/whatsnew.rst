@@ -3,8 +3,51 @@
 What's New in dnspython
 =======================
 
-2.2.0 (in development)
+2.3.0 (in development)
 ----------------------
+
+* Python 3.7 or newer is required.
+
+* Type annotations are now integrated with the source code and cover
+  far more of the library.
+
+* The get_soa() method has been added to dns.zone.Zone.
+
+* The minimum TLS version is now 1.2.
+
+* EDNS padding is now supported.  Messages with EDNS enabled and with a
+  non-zero pad option will be automatically padded appropriately when
+  converted to wire format.
+
+2.2.1
+-----
+
+This release has no new features, but fixes the following issues:
+
+* dns.zone.from_text failed if relativize was False and an origin was
+  specified in the parameters.
+
+* A number of types permitted an empty "rest of the rdata".
+
+* L32, L64, LP, and NID were missing from dns/rdtypes/ANY/__init__.py
+
+* The type definition for dns.resolver.resolve_address() was incorrect.
+
+* dns/win32util.py erroneously had the executable bit set.
+
+* The type definition for a number of asynchronous query routines was
+  missing the default of None for the backend parameter.
+
+* dns/tsigkeyring.py didn't import dns.tsig.
+
+* A number of rdata types that have a "rest of the line" behavior for
+  the last field of the rdata erroneously permitted an empty string.
+
+* Timeout intervals are no longer reported with absurd precision in
+  exception text.
+
+2.2.0
+-----
 
 * SVCB and HTTPS records have been updated to track the evolving draft
   standard.
@@ -43,6 +86,8 @@ What's New in dnspython
   then add an MX rdataset to it, then the CNAME rdataset will be deleted.
   Likewise if you have a node containing an MX rdataset and add a
   CNAME rdataset, the MX rdataset will be deleted.
+
+* Extended DNS Errors, as specified in RFC 8914, are now supported.
 
 2.1.0
 ----------------------
