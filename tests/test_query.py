@@ -36,14 +36,7 @@ import dns.rdatatype
 import dns.query
 import dns.tsigkeyring
 import dns.zone
-
-# Some tests require the internet to be available to run, so let's
-# skip those if it's not there.
-_network_available = True
-try:
-    socket.gethostbyname("dnspython.org")
-except socket.gaierror:
-    _network_available = False
+import tests.util
 
 # Some tests use a "nano nameserver" for testing.  It requires trio
 # and threading, so try to import it and if it doesn't work, skip
@@ -59,25 +52,16 @@ except ImportError:
         pass
 
 
-# Probe for IPv4 and IPv6
 query_addresses = []
-for (af, address) in (
-    (socket.AF_INET, "8.8.8.8"),
-    (socket.AF_INET6, "2001:4860:4860::8888"),
-):
-    try:
-        with socket.socket(af, socket.SOCK_DGRAM) as s:
-            # Connecting a UDP socket is supposed to return ENETUNREACH if
-            # no route to the network is present.
-            s.connect((address, 53))
-        query_addresses.append(address)
-    except Exception:
-        pass
+if tests.util.have_ipv4():
+    query_addresses.append("8.8.8.8")
+if tests.util.have_ipv6():
+    query_addresses.append("2001:4860:4860::8888")
 
 keyring = dns.tsigkeyring.from_text({"name": "tDz6cfXXGtNivRpQ98hr6A=="})
 
 
-@unittest.skipIf(not _network_available, "Internet not reachable")
+@unittest.skipIf(not tests.util.is_internet_reachable(), "Internet not reachable")
 class QueryTests(unittest.TestCase):
     def testQueryUDP(self):
         for address in query_addresses:

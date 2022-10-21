@@ -31,7 +31,7 @@ import dns.query
 import dns.rdataclass
 import dns.rdatatype
 import dns.resolver
-
+import tests.util
 
 # Some tests require TLS so skip those if it's not there.
 ssl = dns.query.ssl
@@ -40,15 +40,6 @@ try:
     _ssl_available = True
 except Exception:
     _ssl_available = False
-
-
-# Some tests require the internet to be available to run, so let's
-# skip those if it's not there.
-_network_available = True
-try:
-    socket.gethostbyname("dnspython.org")
-except socket.gaierror:
-    _network_available = False
 
 
 # Look for systemd-resolved, as it does dangling CNAME responses incorrectly.
@@ -62,20 +53,11 @@ try:
 except Exception:
     pass
 
-# Probe for IPv4 and IPv6
 query_addresses = []
-for (af, address) in (
-    (socket.AF_INET, "8.8.8.8"),
-    (socket.AF_INET6, "2001:4860:4860::8888"),
-):
-    try:
-        with socket.socket(af, socket.SOCK_DGRAM) as s:
-            # Connecting a UDP socket is supposed to return ENETUNREACH if
-            # no route to the network is present.
-            s.connect((address, 53))
-        query_addresses.append(address)
-    except Exception:
-        pass
+if tests.util.have_ipv4():
+    query_addresses.append("8.8.8.8")
+if tests.util.have_ipv6():
+    query_addresses.append("2001:4860:4860::8888")
 
 KNOWN_ANYCAST_DOH_RESOLVER_URLS = [
     "https://cloudflare-dns.com/dns-query",
@@ -178,7 +160,7 @@ class MiscQuery(unittest.TestCase):
         self.assertEqual(t, ("::", 53))
 
 
-@unittest.skipIf(not _network_available, "Internet not reachable")
+@unittest.skipIf(not tests.util.is_internet_reachable(), "Internet not reachable")
 class AsyncTests(unittest.TestCase):
     connect_udp = sys.platform == "win32"
 
@@ -541,6 +523,52 @@ class AsyncTests(unittest.TestCase):
         self.async_run(run)
 
 
+@unittest.skipIf(not tests.util.is_internet_reachable(), "Internet not reachable")
+class AsyncioOnlyTests(unittest.TestCase):
+    connect_udp = sys.platform == "win32"
+
+    def setUp(self):
+        self.backend = dns.asyncbackend.set_default_backend("asyncio")
+
+    def async_run(self, afunc):
+        return asyncio.run(afunc())
+
+    def testUseAfterTimeout(self):
+        if self.connect_udp:
+            self.skipTest("test needs connectionless sockets")
+        # Test #843 fix.
+        async def run():
+            qname = dns.name.from_text("dns.google")
+            query = dns.message.make_query(qname, "A")
+            sock = await self.backend.make_socket(socket.AF_INET, socket.SOCK_DGRAM)
+            async with sock:
+                # First do something that will definitely timeout.
+                try:
+                    response = await dns.asyncquery.udp(
+                        query, "8.8.8.8", timeout=0.0001, sock=sock
+                    )
+                except dns.exception.Timeout:
+                    pass
+                except Exception:
+                    self.assertTrue(False)
+                # Now try to reuse the socket with a reasonable timeout.
+                try:
+                    response = await dns.asyncquery.udp(
+                        query, "8.8.8.8", timeout=5, sock=sock
+                    )
+                    rrs = response.get_rrset(
+                        response.answer, qname, dns.rdataclass.IN, dns.rdatatype.A
+                    )
+                    self.assertTrue(rrs is not None)
+                    seen = set([rdata.address for rdata in rrs])
+                    self.assertTrue("8.8.8.8" in seen)
+                    self.assertTrue("8.8.4.4" in seen)
+                except Exception:
+                    self.assertTrue(False)
+
+        self.async_run(run)
+
+
 try:
     import trio
     import sniffio
@@ -573,18 +601,23 @@ try:
     import curio
     import sniffio
 
+    @unittest.skipIf(sys.platform == "win32", "curio does not work in windows CI")
     class CurioAsyncDetectionTests(AsyncDetectionTests):
         sniff_result = "curio"
 
         def async_run(self, afunc):
-            return curio.run(afunc)
+            with curio.Kernel() as kernel:
+                return kernel.run(afunc, shutdown=True)
 
+    @unittest.skipIf(sys.platform == "win32", "curio does not work in windows CI")
     class CurioNoSniffioAsyncDetectionTests(NoSniffioAsyncDetectionTests):
         expect_raise = True
 
         def async_run(self, afunc):
-            return curio.run(afunc)
+            with curio.Kernel() as kernel:
+                return kernel.run(afunc, shutdown=True)
 
+    @unittest.skipIf(sys.platform == "win32", "curio does not work in windows CI")
     class CurioAsyncTests(AsyncTests):
         connect_udp = False
 
@@ -592,7 +625,8 @@ try:
             self.backend = dns.asyncbackend.set_default_backend("curio")
 
         def async_run(self, afunc):
-            return curio.run(afunc)
+            with curio.Kernel() as kernel:
+                return kernel.run(afunc, shutdown=True)
 
 except ImportError:
     pass

@@ -32,14 +32,7 @@ import dns.rdatatype
 import dns.resolver
 import dns.tsig
 import dns.tsigkeyring
-
-# Some tests require the internet to be available to run, so let's
-# skip those if it's not there.
-_network_available = True
-try:
-    socket.gethostbyname("dnspython.org")
-except socket.gaierror:
-    _network_available = False
+import tests.util
 
 # Some tests use a "nano nameserver" for testing.  It requires trio
 # and threading, so try to import it and if it doesn't work, skip
@@ -628,7 +621,7 @@ class BaseResolverTests(unittest.TestCase):
 keyname = dns.name.from_text("keyname")
 
 
-@unittest.skipIf(not _network_available, "Internet not reachable")
+@unittest.skipIf(not tests.util.is_internet_reachable(), "Internet not reachable")
 class LiveResolverTests(unittest.TestCase):
     def testZoneForName1(self):
         name = dns.name.from_text("www.dnspython.org.")
@@ -712,6 +705,7 @@ class LiveResolverTests(unittest.TestCase):
             self.assertIn(qname, nx.qnames())
             self.assertGreaterEqual(len(nx.responses()), 1)
 
+    @unittest.skipIf(not tests.util.have_ipv4(), "IPv4 not reachable")
     def testResolveCacheHit(self):
         res = dns.resolver.Resolver(configure=False)
         res.nameservers = ["8.8.8.8"]
@@ -990,7 +984,7 @@ class NaptrNanoNameserver(Server):
 
 
 @unittest.skipIf(
-    not (_network_available and _nanonameserver_available),
+    not (tests.util.is_internet_reachable() and _nanonameserver_available),
     "Internet and NanoAuth required",
 )
 class NanoTests(unittest.TestCase):
@@ -1057,7 +1051,7 @@ class AlwaysNoErrorNoDataNanoNameserver(Server):
 
 
 @unittest.skipIf(
-    not (_network_available and _nanonameserver_available),
+    not (tests.util.is_internet_reachable() and _nanonameserver_available),
     "Internet and NanoAuth required",
 )
 class ZoneForNameTests(unittest.TestCase):
@@ -1109,7 +1103,7 @@ class FormErrNanoNameserver(Server):
 
 
 @pytest.mark.skipif(
-    not (_network_available and _nanonameserver_available),
+    not (tests.util.is_internet_reachable() and _nanonameserver_available),
     reason="Internet and NanoAuth required",
 )
 def testResolverTimeout():
@@ -1136,7 +1130,7 @@ def testResolverTimeout():
 
 
 @pytest.mark.skipif(
-    not (_network_available and _nanonameserver_available),
+    not (tests.util.is_internet_reachable() and _nanonameserver_available),
     reason="Internet and NanoAuth required",
 )
 def testResolverNoNameservers():
@@ -1167,7 +1161,7 @@ class SlowAlwaysType3NXDOMAINNanoNameserver(Server):
 
 
 @pytest.mark.skipif(
-    not (_network_available and _nanonameserver_available),
+    not (tests.util.is_internet_reachable() and _nanonameserver_available),
     reason="Internet and NanoAuth required",
 )
 def testZoneForNameLifetimeTimeout():

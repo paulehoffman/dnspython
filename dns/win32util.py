@@ -8,12 +8,18 @@ if sys.platform == "win32":
 
     _prefer_wmi = True
 
-    import winreg
+    import winreg  # pylint: disable=import-error
+
+    # Keep pylint quiet on non-windows.
+    try:
+        WindowsError is None  # pylint: disable=used-before-assignment
+    except KeyError:
+        WindowsError = Exception
 
     try:
         import threading
-        import pythoncom
-        import wmi
+        import pythoncom  # pylint: disable=import-error
+        import wmi  # pylint: disable=import-error
 
         _have_wmi = True
     except Exception:
@@ -45,13 +51,14 @@ if sys.platform == "win32":
                 try:
                     system = wmi.WMI()
                     for interface in system.Win32_NetworkAdapterConfiguration():
-                        if interface.IPEnabled:
+                        if interface.IPEnabled and interface.DNSDomain:
                             self.info.domain = _config_domain(interface.DNSDomain)
                             self.info.nameservers = list(interface.DNSServerSearchOrder)
-                            self.info.search = [
-                                dns.name.from_text(x)
-                                for x in interface.DNSDomainSuffixSearchOrder
-                            ]
+                            if interface.DNSDomainSuffixSearchOrder:
+                                self.info.search = [
+                                    _config_domain(x)
+                                    for x in interface.DNSDomainSuffixSearchOrder
+                                ]
                             break
                 finally:
                     pythoncom.CoUninitialize()
@@ -98,7 +105,7 @@ if sys.platform == "win32":
             split_char = self._determine_split_char(search)
             search_list = search.split(split_char)
             for s in search_list:
-                s = dns.name.from_text(s)
+                s = _config_domain(s)
                 if s not in self.info.search:
                     self.info.search.append(s)
 

@@ -17,7 +17,7 @@
 
 """DNS Zones."""
 
-from typing import Any, List, Optional, Tuple, Union
+from typing import Any, Iterable, List, Optional, Set, Tuple, Union
 
 import re
 import sys
@@ -79,6 +79,13 @@ SavedStateType = Tuple[
 ]  # default_ttl_known
 
 
+def _upper_dollarize(s):
+    s = s.upper()
+    if not s.startswith("$"):
+        s = "$" + s
+    return s
+
+
 class Reader:
 
     """Read a DNS zone file into a transaction."""
@@ -89,7 +96,7 @@ class Reader:
         rdclass: dns.rdataclass.RdataClass,
         txn: dns.transaction.Transaction,
         allow_include: bool = False,
-        allow_directives: bool = True,
+        allow_directives: Union[bool, Iterable[str]] = True,
         force_name: Optional[dns.name.Name] = None,
         force_ttl: Optional[int] = None,
         force_rdclass: Optional[dns.rdataclass.RdataClass] = None,
@@ -114,8 +121,19 @@ class Reader:
         self.txn = txn
         self.saved_state: List[SavedStateType] = []
         self.current_file: Optional[Any] = None
-        self.allow_include = allow_include
-        self.allow_directives = allow_directives
+        self.allowed_directives: Set[str]
+        if allow_directives is True:
+            self.allowed_directives = {"$GENERATE", "$ORIGIN", "$TTL"}
+            if allow_include:
+                self.allowed_directives.add("$INCLUDE")
+        elif allow_directives is False:
+            # allow_include was ignored in earlier releases if allow_directives was
+            # False, so we continue that.
+            self.allowed_directives = set()
+        else:
+            # Note that if directives are explicitly specified, then allow_include
+            # is ignored.
+            self.allowed_directives = set(_upper_dollarize(d) for d in allow_directives)
         self.force_name = force_name
         self.force_ttl = force_ttl
         self.force_rdclass = force_rdclass
@@ -244,7 +262,7 @@ class Reader:
 
         self.txn.add(name, ttl, rd)
 
-    def _parse_modify(self, side):
+    def _parse_modify(self, side: str) -> Tuple[str, str, int, int, str]:
         # Here we catch everything in '{' '}' in a group so we can replace it
         # with ''.
         is_generate1 = re.compile(r"^.*\$({(\+|-?)(\d+),(\d+),(.)}).*$")
@@ -279,8 +297,13 @@ class Reader:
             width = 0
             base = "d"
 
-        if base != "d":
-            raise NotImplementedError()
+        offset = int(offset)
+        width = int(width)
+
+        if sign not in ["+", "-"]:
+            raise dns.exception.SyntaxError("invalid offset sign %s" % sign)
+        if base not in ["d", "o", "x", "X", "n", "N"]:
+            raise dns.exception.SyntaxError("invalid type %s" % base)
 
         return mod, sign, offset, width, base
 
@@ -349,25 +372,35 @@ class Reader:
         # rhs (required)
         rhs = token.value
 
-        # The code currently only supports base 'd', so the last value
-        # in the tuple _parse_modify returns is ignored
-        lmod, lsign, loffset, lwidth, _ = self._parse_modify(lhs)
-        rmod, rsign, roffset, rwidth, _ = self._parse_modify(rhs)
+        def _calculate_index(counter: int, offset_sign: str, offset: int) -> int:
+            """Calculate the index from the counter and offset."""
+            if offset_sign == "-":
+                offset *= -1
+            return counter + offset
+
+        def _format_index(index: int, base: str, width: int) -> str:
+            """Format the index with the given base, and zero-fill it
+            to the given width."""
+            if base in ["d", "o", "x", "X"]:
+                return format(index, base).zfill(width)
+
+            # base can only be n or N here
+            hexa = _format_index(index, "x", width)
+            nibbles = ".".join(hexa[::-1])[:width]
+            if base == "N":
+                nibbles = nibbles.upper()
+            return nibbles
+
+        lmod, lsign, loffset, lwidth, lbase = self._parse_modify(lhs)
+        rmod, rsign, roffset, rwidth, rbase = self._parse_modify(rhs)
         for i in range(start, stop + 1, step):
             # +1 because bind is inclusive and python is exclusive
 
-            if lsign == "+":
-                lindex = i + int(loffset)
-            elif lsign == "-":
-                lindex = i - int(loffset)
+            lindex = _calculate_index(i, lsign, loffset)
+            rindex = _calculate_index(i, rsign, roffset)
 
-            if rsign == "-":
-                rindex = i - int(roffset)
-            elif rsign == "+":
-                rindex = i + int(roffset)
-
-            lzfindex = str(lindex).zfill(int(lwidth))
-            rzfindex = str(rindex).zfill(int(rwidth))
+            lzfindex = _format_index(lindex, lbase, lwidth)
+            rzfindex = _format_index(rindex, rbase, rwidth)
 
             name = lhs.replace("$%s" % (lmod), lzfindex)
             rdata = rhs.replace("$%s" % (rmod), rzfindex)
@@ -438,8 +471,14 @@ class Reader:
                 elif token.is_comment():
                     self.tok.get_eol()
                     continue
-                elif token.value[0] == "$" and self.allow_directives:
+                elif token.value[0] == "$" and len(self.allowed_directives) > 0:
+                    # Note that we only run directive processing code if at least
+                    # one directive is allowed in order to be backwards compatible
                     c = token.value.upper()
+                    if c not in self.allowed_directives:
+                        raise dns.exception.SyntaxError(
+                            f"zone file directive '{c}' is not allowed"
+                        )
                     if c == "$TTL":
                         token = self.tok.get()
                         if not token.is_identifier():
@@ -453,7 +492,7 @@ class Reader:
                         if self.zone_origin is None:
                             self.zone_origin = self.current_origin
                         self.txn._set_origin(self.current_origin)
-                    elif c == "$INCLUDE" and self.allow_include:
+                    elif c == "$INCLUDE":
                         token = self.tok.get()
                         filename = token.value
                         token = self.tok.get()
@@ -486,7 +525,7 @@ class Reader:
                         self._generate_line()
                     else:
                         raise dns.exception.SyntaxError(
-                            "Unknown zone file directive '" + c + "'"
+                            f"Unknown zone file directive '{c}'"
                         )
                     continue
                 self.tok.unget(token)
@@ -564,6 +603,9 @@ class RRsetsReaderTransaction(dns.transaction.Transaction):
     def _set_origin(self, origin):
         pass
 
+    def _iterate_rdatasets(self):
+        raise NotImplementedError  # pragma: no cover
+
 
 class RRSetsReaderManager(dns.transaction.TransactionManager):
     def __init__(
@@ -573,6 +615,9 @@ class RRSetsReaderManager(dns.transaction.TransactionManager):
         self.relativize = relativize
         self.rdclass = rdclass
         self.rrsets = []
+
+    def reader(self):  # pragma: no cover
+        raise NotImplementedError
 
     def writer(self, replacement=False):
         assert replacement is True
