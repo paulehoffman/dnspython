@@ -1,7 +1,5 @@
-#!/usr/bin/env python3
-#
 # Copyright (C) Dnspython Contributors, see LICENSE for text of ISC license
-#
+
 # Copyright (C) 2003-2007, 2009-2011 Nominum, Inc.
 #
 # Permission to use, copy, modify, and distribute this software and its
@@ -17,25 +15,10 @@
 # ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT
 # OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
-import sys
-from setuptools import setup
+import dns.immutable
+import dns.rdtypes.txtbase
 
 
-try:
-    sys.argv.remove("--cython-compile")
-except ValueError:
-    compile_cython = False
-else:
-    compile_cython = True
-    from Cython.Build import cythonize
-
-    ext_modules = cythonize(
-        ["dns/*.py", "dns/rdtypes/*.py", "dns/rdtypes/*/*.py"], language_level="3"
-    )
-
-kwargs = {
-    "ext_modules": ext_modules if compile_cython else None,
-    "zip_safe": False if compile_cython else None,
-}
-
-setup(**kwargs)
+@dns.immutable.immutable
+class RESINFO(dns.rdtypes.txtbase.TXTBase):
+    """RESINFO record"""

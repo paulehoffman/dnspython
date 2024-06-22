@@ -15,18 +15,34 @@
 # ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT
 # OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
-from typing import Any
-
+import functools
+import time
 import unittest
+from datetime import datetime, timedelta, timezone
+from typing import Any
 
 import dns.dnssec
 import dns.name
 import dns.rdata
 import dns.rdataclass
+import dns.rdataset
 import dns.rdatatype
+import dns.rdtypes.ANY.CDNSKEY
 import dns.rdtypes.ANY.CDS
+import dns.rdtypes.ANY.DNSKEY
 import dns.rdtypes.ANY.DS
 import dns.rrset
+import dns.zone
+from dns.rdtypes.dnskeybase import Flag
+
+from .keys import test_dnskeys
+
+try:
+    from cryptography.hazmat.backends import default_backend
+    from cryptography.hazmat.primitives.asymmetric import dsa, ec, ed448, ed25519, rsa
+    from cryptography.hazmat.primitives.serialization import load_pem_private_key
+except ImportError:
+    pass  # Cryptography ImportError already handled in dns.dnssec
 
 # pylint: disable=line-too-long
 
@@ -151,6 +167,12 @@ sep_key = dns.rdata.from_text(
 good_ds = dns.rdata.from_text(
     dns.rdataclass.IN,
     dns.rdatatype.DS,
+    "57349 5 2 53A79A3E7488AB44FFC56B2D1109F0699D1796DD977E72108B841F96 E47D7013",
+)
+
+good_cds = dns.rdata.from_text(
+    dns.rdataclass.IN,
+    dns.rdatatype.CDS,
     "57349 5 2 53A79A3E7488AB44FFC56B2D1109F0699D1796DD977E72108B841F96 E47D7013",
 )
 
@@ -562,11 +584,76 @@ fake_gost_ns_rrsig = dns.rrset.from_text(
     " SXTV9hCLVFWU4PS+/fxxfOHCetsY5tWWSxZi zSHfgpGfsHWzQoAamag4XYDyykc=",
 )
 
+test_zone_sans_nsec = """
+example. 3600 IN SOA foo.example. bar.example. 1 2 3 4 5
+example. 3600 IN NS ns1.example.
+example. 3600 IN NS ns2.example.
+bar.foo.example. 3600 IN MX 0 blaz.foo.example.
+ns1.example. 3600 IN A 10.0.0.1
+ns2.example. 3600 IN A 10.0.0.2
+sub.example. 3600 IN NS ns1.example.
+sub.example. 3600 IN NS ns2.example.
+sub.example. 3600 IN NS ns3.sub.example.
+sub.example. 3600 IN DS 12345 13 2 0100D208742A23024DF3C8827DFF3EB3E25126E9B72850E99D6055E18913CB2F
+sub.sub.example. 3600 IN NS ns3.sub.example.
+ns3.sub.example. 3600 IN A 10.0.0.3
+"""
+
+test_zone_rrsigs = set(
+    [
+        ("example.", dns.rdatatype.DNSKEY),
+        ("example.", dns.rdatatype.NS),
+        ("example.", dns.rdatatype.NSEC),
+        ("example.", dns.rdatatype.SOA),
+        ("bar.foo.example.", dns.rdatatype.MX),
+        ("bar.foo.example.", dns.rdatatype.NSEC),
+        ("ns1.example.", dns.rdatatype.A),
+        ("ns1.example.", dns.rdatatype.NSEC),
+        ("ns2.example.", dns.rdatatype.A),
+        ("ns2.example.", dns.rdatatype.NSEC),
+        ("sub.example.", dns.rdatatype.DS),
+        ("sub.example.", dns.rdatatype.NSEC),
+    ]
+)
+
+test_zone_with_nsec = """
+example. 3600 IN SOA foo.example. bar.example. 1 2 3 4 5
+example. 3600 IN NS ns1.example.
+example. 3600 IN NS ns2.example.
+example. 5 IN NSEC bar.foo.example. NS NSEC SOA RRSIG
+bar.foo.example. 3600 IN MX 0 blaz.foo.example.
+bar.foo.example. 5 IN NSEC ns1.example. MX NSEC RRSIG
+ns1.example. 3600 IN A 10.0.0.1
+ns1.example. 5 IN NSEC ns2.example. A NSEC RRSIG
+ns2.example. 3600 IN A 10.0.0.2
+ns2.example. 5 IN NSEC sub.example. A NSEC RRSIG
+sub.example. 3600 IN NS ns1.example.
+sub.example. 3600 IN NS ns2.example.
+sub.example. 3600 IN NS ns3.sub.example.
+sub.example. 3600 IN DS 12345 13 2 0100D208742A23024DF3C8827DFF3EB3E25126E9B72850E99D6055E18913CB2F
+sub.example. 5 IN NSEC example. DS NS NSEC RRSIG
+sub.sub.example. 3600 IN NS ns3.sub.example.
+ns3.sub.example. 3600 IN A 10.0.0.3
+"""
+
 
 @unittest.skipUnless(dns.dnssec._have_pyca, "Python Cryptography cannot be imported")
 class DNSSECValidatorTestCase(unittest.TestCase):
     def testAbsoluteRSAMD5Good(self):  # type: () -> None
-        dns.dnssec.validate(rsamd5_ns, rsamd5_ns_rrsig, rsamd5_keys, None, rsamd5_when)
+        dns.dnssec.validate(
+            rsamd5_ns,
+            rsamd5_ns_rrsig,
+            rsamd5_keys,
+            None,
+            rsamd5_when,
+            policy=dns.dnssec.allow_all_policy,
+        )
+
+    def testAbsoluteRSAMD5GoodDeniedByPolicy(self):  # type: () -> None
+        with self.assertRaises(dns.dnssec.ValidationFailure):
+            dns.dnssec.validate(
+                rsamd5_ns, rsamd5_ns_rrsig, rsamd5_keys, None, rsamd5_when
+            )
 
     def testRSAMD5Keyid(self):
         self.assertEqual(dns.dnssec.key_id(rsamd5_keys[abs_example][0]), 30239)
@@ -600,12 +687,30 @@ class DNSSECValidatorTestCase(unittest.TestCase):
         self.assertRaises(dns.dnssec.ValidationFailure, bad)
 
     def testAbsoluteDSAGood(self):  # type: () -> None
-        dns.dnssec.validate(abs_dsa_soa, abs_dsa_soa_rrsig, abs_dsa_keys, None, when2)
+        dns.dnssec.validate(
+            abs_dsa_soa,
+            abs_dsa_soa_rrsig,
+            abs_dsa_keys,
+            None,
+            when2,
+            policy=dns.dnssec.allow_all_policy,
+        )
+
+    def testAbsoluteDSAGoodDeniedByPolicy(self):  # type: () -> None
+        with self.assertRaises(dns.dnssec.ValidationFailure):
+            dns.dnssec.validate(
+                abs_dsa_soa, abs_dsa_soa_rrsig, abs_dsa_keys, None, when2
+            )
 
     def testAbsoluteDSABad(self):  # type: () -> None
         def bad():  # type: () -> None
             dns.dnssec.validate(
-                abs_other_dsa_soa, abs_dsa_soa_rrsig, abs_dsa_keys, None, when2
+                abs_other_dsa_soa,
+                abs_dsa_soa_rrsig,
+                abs_dsa_keys,
+                None,
+                when2,
+                policy=dns.dnssec.allow_all_policy,
             )
 
         self.assertRaises(dns.dnssec.ValidationFailure, bad)
@@ -719,6 +824,26 @@ class DNSSECValidatorTestCase(unittest.TestCase):
                 com_txt, com_txt_rrsig[0], wildcard_keys, None, wildcard_when
             )
 
+        # check some bogus label lengths
+        a_name = dns.name.from_text("a.example.com")
+        a_txt = clone_rrset(wildcard_txt, a_name)
+        a_txt_rrsig = clone_rrset(wildcard_txt_rrsig, a_name)
+        bad_rrsig = a_txt_rrsig[0].replace(labels=99)
+        with self.assertRaises(dns.dnssec.ValidationFailure):
+            dns.dnssec.validate_rrsig(
+                a_txt, bad_rrsig, wildcard_keys, None, wildcard_when
+            )
+        bad_rrsig = a_txt_rrsig[0].replace(labels=3)
+        with self.assertRaises(dns.dnssec.ValidationFailure):
+            dns.dnssec.validate_rrsig(
+                a_txt, bad_rrsig, wildcard_keys, None, wildcard_when
+            )
+        bad_rrsig = a_txt_rrsig[0].replace(labels=1)
+        with self.assertRaises(dns.dnssec.ValidationFailure):
+            dns.dnssec.validate_rrsig(
+                a_txt, bad_rrsig, wildcard_keys, None, wildcard_when
+            )
+
     def testAlternateParameterFormats(self):  # type: () -> None
         # Pass rrset and rrsigset as (name, rdataset) tuples, not rrsets
         rrset = (abs_soa.name, abs_soa.to_rdataset())
@@ -727,13 +852,13 @@ class DNSSECValidatorTestCase(unittest.TestCase):
 
         # Pass keys as a name->node dict, not a name->rrset dict
         keys = {}
-        for (name, key_rrset) in abs_keys.items():
+        for name, key_rrset in abs_keys.items():
             keys[name] = dns.node.Node()
             keys[name].rdatasets.append(key_rrset.to_rdataset())
         dns.dnssec.validate(abs_soa, abs_soa_rrsig, keys, None, when)
         # test key not found.
         keys = {}
-        for (name, key_rrset) in abs_keys.items():
+        for name, key_rrset in abs_keys.items():
             keys[name] = dns.node.Node()
         with self.assertRaises(dns.dnssec.ValidationFailure):
             dns.dnssec.validate(abs_soa, abs_soa_rrsig, keys, None, when)
@@ -797,7 +922,39 @@ class DNSSECValidatorTestCase(unittest.TestCase):
                 rsasha512_when,
             )
 
+    def check_candidates(self, flags, protocol, expected_number_of_candidates):
+        algorithm = dns.dnssec.Algorithm.ED25519
+        zsk_private_key = ed25519.Ed25519PrivateKey.generate()
+        zsk_dnskey = dns.dnssec.make_dnskey(
+            public_key=zsk_private_key.public_key(),
+            algorithm=algorithm,
+            flags=flags,
+            protocol=protocol,
+        )
+        zsk_dnskey_rdataset = dns.rdataset.from_rdata(300, zsk_dnskey)
+        signer = dns.name.from_text("example")
+        a_rrset = dns.rrset.from_text(signer, 300, "IN", "A", "10.0.0.1")
+        inception = time.time()
+        expiration = inception + 86400
+        a_rrsig = dns.dnssec.sign(
+            a_rrset, zsk_private_key, signer, zsk_dnskey, inception, expiration
+        )
+        candidates = dns.dnssec._find_candidate_keys(
+            {signer: zsk_dnskey_rdataset}, a_rrsig
+        )
+        self.assertTrue(len(candidates) == expected_number_of_candidates)
 
+    def testCandidateKeyMustBeProtocol3(self):
+        self.check_candidates(Flag.ZONE, 1, 0)
+
+    def testCandidateKeyMustHaveZoneFlag(self):
+        self.check_candidates(0, 3, 0)
+
+    def testGoodCandidateKeyIsFound(self):
+        self.check_candidates(Flag.ZONE, 3, 1)
+
+
+@unittest.skipUnless(dns.dnssec._have_pyca, "Python Cryptography cannot be imported")
 class DNSSECMiscTestCase(unittest.TestCase):
     def testDigestToBig(self):
         with self.assertRaises(ValueError):
@@ -807,14 +964,134 @@ class DNSSECMiscTestCase(unittest.TestCase):
         with self.assertRaises(ValueError):
             dns.dnssec.NSEC3Hash.make(256)
 
-    def testIsNotGOST(self):
-        self.assertTrue(dns.dnssec._is_gost(dns.dnssec.Algorithm.ECCGOST))
+    def testToTimestamp(self):
+        REFERENCE_TIMESTAMP = 441812220
 
-    def testUnknownHash(self):
-        with self.assertRaises(dns.dnssec.ValidationFailure):
-            dns.dnssec._make_hash(100)
+        ts = dns.dnssec.to_timestamp(
+            datetime(year=1984, month=1, day=1, hour=13, minute=37, tzinfo=timezone.utc)
+        )
+        self.assertEqual(ts, REFERENCE_TIMESTAMP)
+
+        ts = dns.dnssec.to_timestamp("19840101133700")
+        self.assertEqual(ts, REFERENCE_TIMESTAMP)
+
+        ts = dns.dnssec.to_timestamp(441812220.0)
+        self.assertEqual(ts, REFERENCE_TIMESTAMP)
+
+        ts = dns.dnssec.to_timestamp(441812220)
+        self.assertEqual(ts, REFERENCE_TIMESTAMP)
+
+    def testInceptionExpiration(self):
+        zsk_private_key = ed25519.Ed25519PrivateKey.generate()
+        zsk_dnskey = dns.dnssec.make_dnskey(
+            public_key=zsk_private_key.public_key(),
+            algorithm=dns.dnssec.Algorithm.ED25519,
+        )
+        signer = dns.name.from_text("example")
+        a_rrset = dns.rrset.from_text(signer, 300, "IN", "A", "10.0.0.1")
+        inception = 10
+        expiration = inception + 86400
+        a_rrsig = dns.dnssec.sign(
+            a_rrset, zsk_private_key, signer, zsk_dnskey, inception, expiration
+        )
+        self.assertEqual(a_rrsig.inception, inception)
+        self.assertEqual(a_rrsig.expiration, expiration)
+        a_rrsig = dns.dnssec.sign(
+            a_rrset, zsk_private_key, signer, zsk_dnskey, inception, lifetime=86400
+        )
+        self.assertEqual(a_rrsig.inception, inception)
+        self.assertEqual(a_rrsig.expiration, expiration)
+        a_rrsig = dns.dnssec.sign(
+            a_rrset, zsk_private_key, signer, zsk_dnskey, lifetime=86400
+        )
+        self.assertEqual(a_rrsig.expiration - a_rrsig.inception, 86400)
+        # Allow a little slop in case the clock ticks.
+        self.assertTrue(time.time() - a_rrsig.inception <= 2)
+
+    def do_test_sign_zone(self, relativize):
+        zone = dns.zone.from_text(
+            test_zone_sans_nsec, "example.", relativize=relativize
+        )
+
+        algorithm = dns.dnssec.Algorithm.ED25519
+        lifetime = 3600
+
+        ksk_private_key = ed25519.Ed25519PrivateKey.generate()
+        ksk_dnskey = dns.dnssec.make_dnskey(
+            public_key=ksk_private_key.public_key(),
+            algorithm=algorithm,
+            flags=Flag.ZONE | Flag.SEP,
+        )
+
+        zsk_private_key = ed25519.Ed25519PrivateKey.generate()
+        zsk_dnskey = dns.dnssec.make_dnskey(
+            public_key=zsk_private_key.public_key(),
+            algorithm=algorithm,
+            flags=Flag.ZONE,
+        )
+
+        keys = [(ksk_private_key, ksk_dnskey), (zsk_private_key, zsk_dnskey)]
+
+        with zone.writer() as txn:
+            dns.dnssec.sign_zone(
+                zone=zone,
+                txn=txn,
+                keys=keys,
+                lifetime=lifetime,
+            )
+
+        print(zone.to_text())
+        rrsigs = set(
+            [
+                (str(name.derelativize(zone.origin)), rdataset.covers)
+                for (name, rdataset) in zone.iterate_rdatasets()
+                if rdataset.rdtype == dns.rdatatype.RRSIG
+            ]
+        )
+        self.assertEqual(rrsigs, test_zone_rrsigs)
+
+        signers = set(
+            [
+                (
+                    str(name.derelativize(zone.origin)),
+                    rdataset.covers,
+                    rdataset[0].key_tag,
+                )
+                for (name, rdataset) in zone.iterate_rdatasets()
+                if rdataset.rdtype == dns.rdatatype.RRSIG
+            ]
+        )
+        for name, covers, key_tag in signers:
+            if covers in [
+                dns.rdatatype.DNSKEY,
+                dns.rdatatype.CDNSKEY,
+                dns.rdatatype.CDS,
+            ]:
+                self.assertEqual(key_tag, dns.dnssec.key_id(ksk_dnskey))
+            else:
+                self.assertEqual(key_tag, dns.dnssec.key_id(zsk_dnskey))
+
+    def test_sign_zone_absolute(self):
+        self.do_test_sign_zone(False)
+
+    def test_sign_zone_relative(self):
+        self.do_test_sign_zone(True)
+
+    def test_sign_zone_nsec_null_signer(self):
+        def rrset_signer(
+            txn: dns.transaction.Transaction,
+            rrset: dns.rrset.RRset,
+        ) -> None:
+            pass
+
+        zone1 = dns.zone.from_text(test_zone_sans_nsec, "example.", relativize=False)
+        dns.dnssec.sign_zone(zone1, rrset_signer=rrset_signer)
+
+        zone2 = dns.zone.from_text(test_zone_with_nsec, "example.", relativize=False)
+        self.assertEqual(zone1.to_text(), zone2.to_text())
 
 
+@unittest.skipUnless(dns.dnssec._have_pyca, "Python Cryptography cannot be imported")
 class DNSSECMakeDSTestCase(unittest.TestCase):
     def testMnemonicParser(self):
         good_ds_mnemonic = dns.rdata.from_text(
@@ -828,9 +1105,39 @@ class DNSSECMakeDSTestCase(unittest.TestCase):
     def testMakeExampleSHA1DS(self):  # type: () -> None
         algorithm: Any
         for algorithm in ("SHA1", "sha1", dns.dnssec.DSDigest.SHA1):
-            ds = dns.dnssec.make_ds(abs_example, example_sep_key, algorithm)
+            ds = dns.dnssec.make_ds(
+                abs_example,
+                example_sep_key,
+                algorithm,
+                policy=dns.dnssec.allow_all_policy,
+            )
             self.assertEqual(ds, example_ds_sha1)
-            ds = dns.dnssec.make_ds("example.", example_sep_key, algorithm)
+            ds = dns.dnssec.make_ds(
+                "example.",
+                example_sep_key,
+                algorithm,
+                policy=dns.dnssec.allow_all_policy,
+            )
+            self.assertEqual(ds, example_ds_sha1)
+
+    def testMakeExampleSHA1DSValidationOkByPolicy(self):  # type: () -> None
+        algorithm: Any
+        for algorithm in ("SHA1", "sha1", dns.dnssec.DSDigest.SHA1):
+            ds = dns.dnssec.make_ds(
+                abs_example,
+                example_sep_key,
+                algorithm,
+                policy=dns.dnssec.allow_all_policy,
+            )
+            self.assertEqual(ds, example_ds_sha1)
+            ds = dns.dnssec.make_ds(
+                "example.", example_sep_key, algorithm, validating=True
+            )
+            self.assertEqual(ds, example_ds_sha1)
+
+    def testMakeExampleSHA1DSDeniedByPolicy(self):  # type: () -> None
+        with self.assertRaises(dns.dnssec.DeniedByPolicy):
+            ds = dns.dnssec.make_ds(abs_example, example_sep_key, "SHA1")
             self.assertEqual(ds, example_ds_sha1)
 
     def testMakeExampleSHA256DS(self):  # type: () -> None
@@ -848,6 +1155,10 @@ class DNSSECMakeDSTestCase(unittest.TestCase):
     def testMakeSHA256DS(self):  # type: () -> None
         ds = dns.dnssec.make_ds(abs_dnspython_org, sep_key, "SHA256")
         self.assertEqual(ds, good_ds)
+
+    def testMakeSHA256CDS(self):  # type: () -> None
+        cds = dns.dnssec.make_cds(abs_dnspython_org, sep_key, "SHA256")
+        self.assertEqual(cds, good_cds)
 
     def testInvalidAlgorithm(self):  # type: () -> None
         algorithm: Any
@@ -917,6 +1228,231 @@ class DNSSECMakeDSTestCase(unittest.TestCase):
                 with self.assertRaises(dns.exception.SyntaxError) as cm:
                     dns.rdata.from_text(dns.rdataclass.IN, dns.rdatatype.CDS, record)
                 self.assertEqual(msg, str(cm.exception))
+
+    def testMakeCDS(self):  # type: () -> None
+        name = dns.name.from_text("example.com")
+        key = ed448.Ed448PrivateKey.generate()
+
+        for dnskey in [
+            dns.dnssec.make_dnskey(
+                key.public_key(), algorithm=dns.dnssec.Algorithm.ED448
+            ),
+            dns.dnssec.make_cdnskey(
+                key.public_key(), algorithm=dns.dnssec.Algorithm.ED448
+            ),
+        ]:
+            dnskey_rdataset = dns.rdataset.from_rdata_list(3600, [dnskey])
+            cds_rdataset = dns.dnssec.dnskey_rdataset_to_cds_rdataset(
+                name, dnskey_rdataset, "SHA256"
+            )
+            self.assertEqual(len(dnskey_rdataset), len(cds_rdataset))
+            for d, c in zip(dnskey_rdataset, cds_rdataset):
+                self.assertTrue(
+                    isinstance(
+                        d,
+                        (
+                            dns.rdtypes.ANY.DNSKEY.DNSKEY,
+                            dns.rdtypes.ANY.CDNSKEY.CDNSKEY,
+                        ),
+                    )
+                )
+                self.assertTrue(isinstance(c, dns.rdtypes.ANY.CDS.CDS))
+                self.assertEqual(dns.dnssec.key_id(d), c.key_tag)
+                self.assertEqual(d.algorithm, c.algorithm)
+
+    def testMakeManyDSfromCDS(self):  # type: () -> None
+        name = dns.name.from_text("example.com")
+        nkeys = 3
+        algorithms = ["SHA256", "SHA384"]
+        keys = [ed448.Ed448PrivateKey.generate() for _ in range(0, nkeys)]
+
+        dnskeys = [
+            dns.dnssec.make_dnskey(
+                key.public_key(), algorithm=dns.dnssec.Algorithm.ED448
+            )
+            for key in keys
+        ]
+
+        dnskey_rdataset = dns.rdataset.from_rdata_list(3600, dnskeys)
+
+        cds_rdataset = dns.dnssec.dnskey_rdataset_to_cds_rdataset(
+            name, dnskey_rdataset, "SHA256"
+        )
+        cds_rrset = dns.rrset.from_rdata_list(name, 3600, cds_rdataset)
+
+        ds_rdataset = dns.dnssec.make_ds_rdataset(cds_rrset, algorithms)
+
+        self.assertEqual(len(cds_rdataset), nkeys)
+
+    def testMakeManyDSfromDNSKEY(self):  # type: () -> None
+        name = dns.name.from_text("example.com")
+        nkeys = 3
+        algorithms = ["SHA256", "SHA384"]
+        keys = [ed448.Ed448PrivateKey.generate() for _ in range(0, nkeys)]
+
+        dnskeys = [
+            dns.dnssec.make_dnskey(
+                key.public_key(), algorithm=dns.dnssec.Algorithm.ED448
+            )
+            for key in keys
+        ]
+
+        dnskey_rrset = dns.rrset.from_rdata_list(name, 3600, dnskeys)
+
+        ds_rdataset = dns.dnssec.make_ds_rdataset(dnskey_rrset, algorithms)
+
+        self.assertEqual(len(ds_rdataset), nkeys * len(algorithms))
+
+
+@unittest.skipUnless(dns.dnssec._have_pyca, "Python Cryptography cannot be imported")
+class DNSSECMakeDNSKEYTestCase(unittest.TestCase):
+    def testKnownDNSKEYs(self):  # type: () -> None
+        for tk in test_dnskeys:
+            print(tk.command)
+            key = load_pem_private_key(tk.private_pem.encode(), password=None)
+            rdata1 = str(dns.dnssec.make_dnskey(key.public_key(), tk.algorithm))
+            rdata2 = str(
+                dns.rdata.from_text(dns.rdataclass.IN, dns.rdatatype.DNSKEY, tk.dnskey)
+            )
+            self.assertEqual(rdata1, rdata2)
+
+    def testInvalidMakeDNSKEY(self):  # type: () -> None
+        key = rsa.generate_private_key(
+            public_exponent=65537,
+            key_size=1024,
+            backend=default_backend(),
+        )
+        with self.assertRaises(dns.exception.AlgorithmKeyMismatch):
+            dns.dnssec.make_dnskey(key.public_key(), dns.dnssec.Algorithm.ED448)
+
+        with self.assertRaises(dns.exception.AlgorithmKeyMismatch):
+            dns.dnssec.make_dnskey("xyzzy", dns.dnssec.Algorithm.ED448)
+
+        key = dsa.generate_private_key(2048)
+        with self.assertRaises(ValueError):
+            dns.dnssec.make_dnskey(key.public_key(), dns.dnssec.Algorithm.DSA)
+
+    def testMakeCDNSKEY(self):  # type: () -> None
+        key = ed448.Ed448PrivateKey.generate()
+        dnskey = dns.dnssec.make_dnskey(
+            key.public_key(), algorithm=dns.dnssec.Algorithm.ED448
+        )
+        cdnskey = dns.dnssec.make_cdnskey(
+            key.public_key(), algorithm=dns.dnssec.Algorithm.ED448
+        )
+
+        self.assertEqual(dnskey.flags, cdnskey.flags)
+        self.assertEqual(dnskey.protocol, cdnskey.protocol)
+        self.assertEqual(dnskey.algorithm, cdnskey.algorithm)
+        self.assertEqual(dnskey.key, cdnskey.key)
+
+        dnskey_rdataset = dns.rdataset.from_rdata_list(3600, [dnskey])
+        cdnskey_rdataset = dns.dnssec.dnskey_rdataset_to_cdnskey_rdataset(
+            dnskey_rdataset
+        )
+        self.assertEqual(len(dnskey_rdataset), len(cdnskey_rdataset))
+        for d, c in zip(dnskey_rdataset, cdnskey_rdataset):
+            self.assertTrue(isinstance(d, dns.rdtypes.ANY.DNSKEY.DNSKEY))
+            self.assertTrue(isinstance(c, dns.rdtypes.ANY.CDNSKEY.CDNSKEY))
+            self.assertEqual(d, c)
+
+    # XXXRTH This test is fine but is noticably slow, so I have commented it out for
+    # now
+
+    # def testRSALargeExponent(self):  # type: () -> None
+    #     for key_size, public_exponent, dnskey_key_length in [
+    #         (1024, 3, 130),
+    #         (1024, 65537, 132),
+    #         (2048, 3, 258),
+    #         (2048, 65537, 260),
+    #         (4096, 3, 514),
+    #         (4096, 65537, 516),
+    #     ]:
+    #         key = rsa.generate_private_key(
+    #             public_exponent=public_exponent,
+    #             key_size=key_size,
+    #             backend=default_backend(),
+    #         )
+    #         dnskey = dns.dnssec.make_dnskey(
+    #             key.public_key(), algorithm=dns.dnssec.Algorithm.RSASHA256
+    #         )
+    #         self.assertEqual(len(dnskey.key), dnskey_key_length)
+
+
+@unittest.skipUnless(dns.dnssec._have_pyca, "Python Cryptography cannot be imported")
+class DNSSECSignatureTestCase(unittest.TestCase):
+    def testSignatureData(self):  # type: () -> None
+        rrsig_template = abs_soa_rrsig[0]
+        data = dns.dnssec._make_rrsig_signature_data(abs_soa, rrsig_template)
+
+    def testSignatureRSASHA1(self):  # type: () -> None
+        key = rsa.generate_private_key(
+            public_exponent=65537, key_size=2048, backend=default_backend()
+        )
+        self._test_signature(key, dns.dnssec.Algorithm.RSASHA1, abs_soa)
+
+    def testSignatureRSASHA256(self):  # type: () -> None
+        key = rsa.generate_private_key(
+            public_exponent=65537, key_size=2048, backend=default_backend()
+        )
+        self._test_signature(key, dns.dnssec.Algorithm.RSASHA256, abs_soa)
+
+    def testSignatureECDSAP256SHA256(self):  # type: () -> None
+        key = ec.generate_private_key(curve=ec.SECP256R1(), backend=default_backend())
+        self._test_signature(key, dns.dnssec.Algorithm.ECDSAP256SHA256, abs_soa)
+
+    def testSignatureECDSAP384SHA384(self):  # type: () -> None
+        key = ec.generate_private_key(curve=ec.SECP384R1(), backend=default_backend())
+        self._test_signature(key, dns.dnssec.Algorithm.ECDSAP384SHA384, abs_soa)
+
+    def testSignatureED25519(self):  # type: () -> None
+        key = ed25519.Ed25519PrivateKey.generate()
+        self._test_signature(key, dns.dnssec.Algorithm.ED25519, abs_soa)
+
+    def testSignatureED448(self):  # type: () -> None
+        key = ed448.Ed448PrivateKey.generate()
+        self._test_signature(key, dns.dnssec.Algorithm.ED448, abs_soa)
+
+    def testSignRdataset(self):  # type: () -> None
+        key = ed448.Ed448PrivateKey.generate()
+        name = dns.name.from_text("example.com")
+        rdataset = dns.rdataset.from_text_list("in", "a", 30, ["10.0.0.1", "10.0.0.2"])
+        rrset = (name, rdataset)
+        self._test_signature(key, dns.dnssec.Algorithm.ED448, rrset)
+
+    def testSignWildRdataset(self):  # type: () -> None
+        key = ed448.Ed448PrivateKey.generate()
+        name = dns.name.from_text("*.example.com")
+        rdataset = dns.rdataset.from_text_list("in", "a", 30, ["10.0.0.1", "10.0.0.2"])
+        rrset = (name, rdataset)
+        rrsigset = self._test_signature(key, dns.dnssec.Algorithm.ED448, rrset)
+        self.assertEqual(rrsigset[0].labels, 2)
+
+    def _test_signature(self, key, algorithm, rrset, signer=None, policy=None):
+        ttl = 60
+        lifetime = 3600
+        if isinstance(rrset, tuple):
+            rrname = rrset[0]
+        else:
+            rrname = rrset.name
+        signer = signer or rrname
+        dnskey = dns.dnssec.make_dnskey(
+            public_key=key.public_key(), algorithm=algorithm
+        )
+        dnskey_rrset = dns.rrset.from_rdata(signer, ttl, dnskey)
+        rrsig = dns.dnssec.sign(
+            rrset=rrset,
+            private_key=key,
+            dnskey=dnskey,
+            lifetime=lifetime,
+            signer=signer,
+            verify=True,
+            policy=policy,
+        )
+        keys = {signer: dnskey_rrset}
+        rrsigset = dns.rrset.from_rdata(rrname, ttl, rrsig)
+        dns.dnssec.validate(rrset=rrset, rrsigset=rrsigset, keys=keys, policy=policy)
+        return rrsigset
 
 
 if __name__ == "__main__":

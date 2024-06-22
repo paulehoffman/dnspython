@@ -22,7 +22,7 @@ always be subclasses of ``DNSException``.
 """
 
 
-from typing import Any, Dict, Optional, Set
+from typing import Optional, Set
 
 
 class DNSException(Exception):
@@ -90,7 +90,7 @@ class DNSException(Exception):
         Resulting dictionary has to have keys necessary for str.format call
         on fmt class variable.
         """
-        fmtargs: Dict[str, Any] = {}
+        fmtargs = {}
         for kw, data in kwargs.items():
             if isinstance(data, (list, set)):
                 # convert list of <someobj> to list of str(<someobj>)
@@ -138,6 +138,22 @@ class Timeout(DNSException):
     # idna_exception
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+
+
+class UnsupportedAlgorithm(DNSException):
+    """The DNSSEC algorithm is not supported."""
+
+
+class AlgorithmKeyMismatch(UnsupportedAlgorithm):
+    """The DNSSEC algorithm is not supported for the given key type."""
+
+
+class ValidationFailure(DNSException):
+    """The DNSSEC signature is invalid."""
+
+
+class DeniedByPolicy(DNSException):
+    """Denied by DNSSEC policy."""
 
 
 class ExceptionWrapper:

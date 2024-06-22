@@ -3,8 +3,149 @@
 What's New in dnspython
 =======================
 
-2.3.0 (in development)
+2.7.0 (in development)
 ----------------------
+
+* TBD
+
+2.6.1
+-----
+
+* The Tudoor fix ate legitimate Truncated exceptions, preventing the resolver from
+  failing over to TCP and causing the query to timeout [#1053].
+
+2.6.0
+-----
+
+* As mentioned in the "TuDoor" paper and the associated CVE-2023-29483, the dnspython
+  stub resolver is vulnerable to a potential DoS if a bad-in-some-way response from the
+  right address and port forged by an attacker arrives before a legitimate one on the
+  UDP port dnspython is using for that query.
+
+  This release addresses the issue by adopting the recommended mitigation, which is
+  ignoring the bad packets and continuing to listen for a legitimate response until
+  the timeout for the query has expired.
+
+* Added support for the NSID EDNS option.
+
+* Dnspython now looks for version metadata for optional packages and will not
+  use them if they are too old.  This prevents possible exceptions when a
+  feature like DoH is not desired in dnspython, but an old httpx is installed
+  along with dnspython for some other purpose.
+
+* The DoHNameserver class now allows GET to be used instead of the default POST,
+  and also passes source and source_port correctly to the underlying query
+  methods.
+
+2.5.0
+-----
+
+* Dnspython now uses hatchling for builds.
+
+* Asynchronous destinationless sockets now work on Windows.
+
+* Cython is no longer supported due to various typing issues.
+
+* Dnspython now explicitly canonicalizes IPv4 and IPv6 addresses.
+  Previously it was possible for non-canonical IPv6 forms to be stored
+  in a AAAA address, which would work correctly but possibly cause
+  problmes if the address were used as a key in a dictionary.
+
+* The number of messages in a section can be retrieved with
+  section_count().
+
+* Truncation preferences for messages can be specified.
+
+* The length of a message can be automatically prepended when
+  rendering.
+
+* dns.message.create_response() automatically adds padding when
+  required by RFC 8467.
+
+* The TLS verify parameter is now supported by dns.query.tls(),
+  and the DoH and DoT Nameserver subclasses.
+
+* The MutableMapping used to store content in a zone may now be
+  specified by a factory when subclassing.  Factories may also be
+  provided for writable verisons and immutable versions.
+
+* dns.name.Name now has predecessor() and successor() methods
+  implementing RFC 4471.
+
+* QUIC has had a number of bug fixes and also now supports session
+  tickets for faster session resumption.
+
+* The NSEC3 class now has a next_name() method for retrieving the next
+  name as a dns.name.Name.
+
+* Windows WMI interface detection should be more robust.
+
+2.4.2
+-----
+
+* Async queries could wait forever instead of respecting the timeout if the timeout was
+  0 and a packet was lost.  The timeout is now respected.
+
+* Restore HTTP/2 support which was accidentally broken during the https refactoring done
+  as part of 2.4.0.
+
+* When an inception time and lifetime are specified, the signer now sets the expiration
+  to the inception time plus lifetime, instead of the current time plus the lifetime.
+
+2.4.1
+-----
+
+* Importing dns.dnssecalgs without the cryptography module installed no longer causes
+  an ImportError.
+
+* A number of timeout bugs with the asyncio backend have been fixed.
+
+* DNS-over-QUIC for the asyncio backend now works for IPv6.
+
+* Dnspython now enforces that the candidate DNSKEYs for DNSSEC signatures
+  have protocol 3 and have the ZONE flag set.  This is a standards compliance issue more
+  than a security issue as the legitimate authority would have to have published
+  the non-compliant keys as well as updated their DS record in order for the records
+  to validate (the DS digest includes both flags and protocol).  Dnspython will not
+  make invalid keys by default, but does allow them to be created and used
+  for testing purposes.
+
+* Dependency specifications for optional features in the package metadata have been
+  improved.
+
+2.4.0
+-----
+
+* Python 3.8 or newer is required.
+
+* The stub resolver now uses instances of ``dns.nameserver.Nameserver`` to represent
+  remote recursive resolvers, and can communicate using
+  DNS over UDP/TCP, HTTPS, TLS, and QUIC.  In additional to being able to specify
+  an IPv4, IPv6, or HTTPS URL as a nameserver, instances of ``dns.nameserver.Nameserver``
+  are now permitted.
+
+* The DNS-over-HTTPS bootstrap address no longer causes URL rewriting.
+
+* DNS-over-HTTPS now only uses httpx; support for requests has been dropped.  A source
+  port may now be supplied when using httpx.
+
+* DNSSEC zone signing with NSEC records is now supported. Thank you
+  very much (again!) Jakob Schlyter!
+
+* The resolver and async resolver now have the ``try_ddr()`` method, which will try to
+  use Discovery of Designated Resolvers (DDR) to upgrade the connection from the stub
+  resolver to the recursive server so that it uses DNS-over-HTTPS, DNS-over-TLS, or
+  DNS-over-QUIC. This feature is currently experimental as the standard is still in
+  draft stage.
+
+* The resolver and async resolver now have the ``make_resolver_at()`` and
+  ``resolve_at()`` functions, as a convenience for making queries to specific
+  recursive servers.
+
+* Curio support has been removed.
+
+2.3.0
+-----
 
 * Python 3.7 or newer is required.
 
@@ -18,6 +159,28 @@ What's New in dnspython
 * EDNS padding is now supported.  Messages with EDNS enabled and with a
   non-zero pad option will be automatically padded appropriately when
   converted to wire format.
+
+* ``dns.zone.from_text()`` and ``dns.zone.from_file()`` now have an
+  ``allow_directives`` parameter to allow finer control over how directives
+  in zonefiles are processed.
+
+* A preliminary implementation of DNS-over-QUIC has been added, and will be
+  available if the aioquic library is present.  See ``dns.query.quic()``,
+  ``dns.asyncquery.quic()``, and examples/doq.py for more info.  This API
+  is subject to change in future releases.  For asynchronous I/O, both
+  asyncio and Trio are supported, but Curio is not.
+
+* DNSSEC signing support has been added to the ``dns.dnssec`` module, along with
+  a number of functions to help generate DS, CDS, and CDNSKEY RRsets.  Thank you
+  very much Jakob Schlyter!
+
+* Curio asynchronous I/O support is deprecated as of this release and will
+  be removed in a future release.
+
+* The resolver object's ``nameserver`` field is planned to become a property in
+  dnspython 2.4.  Writing to this field other than by direct assignment is deprecated,
+  and so is depending on the mutability and form of the iterable returned when it is
+  read.
 
 2.2.1
 -----

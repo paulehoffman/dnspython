@@ -17,19 +17,17 @@
 
 """DNS nodes.  A node is a set of rdatasets."""
 
-from typing import Any, Dict, List, Optional
-
 import enum
 import io
+from typing import Any, Dict, Optional
 
 import dns.immutable
 import dns.name
 import dns.rdataclass
 import dns.rdataset
 import dns.rdatatype
-import dns.rrset
 import dns.renderer
-
+import dns.rrset
 
 _cname_types = {
     dns.rdatatype.CNAME,
@@ -72,7 +70,6 @@ class NodeKind(enum.Enum):
 
 
 class Node:
-
     """A Node is a set of rdatasets.
 
     A node is either a CNAME node or an "other data" node.  A CNAME
@@ -92,7 +89,7 @@ class Node:
 
     def __init__(self):
         # the set of rdatasets, represented as a list.
-        self.rdatasets: List[dns.rdataset.Rdataset] = []
+        self.rdatasets = []
 
     def to_text(self, name: dns.name.Name, **kw: Dict[str, Any]) -> str:
         """Convert a node to text format.
